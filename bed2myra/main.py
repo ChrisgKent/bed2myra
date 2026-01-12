@@ -4,6 +4,11 @@ import pathlib
 import pandas as pd
 from primalbedtools.bedfiles import BedLine, BedLineParser
 
+MIN_VOLUME_UL = 1.0
+MAX_VOLUME_UL = 50.0
+DEFAULT_WEIGHT_UL = 1
+
+
 def cli():
     parser = argparse.ArgumentParser(
         description="Create MYRA sample and transfer plate files from primer BED file and plate specification."
@@ -45,6 +50,7 @@ def cli():
     args = parser.parse_args()
     return args
 
+
 def create_myra_files(
     bedlines: list[BedLine],
     spec_sheet,
@@ -52,7 +58,6 @@ def create_myra_files(
     replicates: int,
     x: int = 1,
 ):
-
     plate_df = spec_sheet[spec_sheet["Plate Name"] == plate_name]
     if plate_df.empty:
         available_plates = spec_sheet["Plate Name"].unique().tolist()
@@ -80,17 +85,31 @@ def create_myra_files(
     transfer_data = []
     for replicate in range(1, replicates + 1):
         for bl in wanted_bedlines:
+            volume = (bl.weight if bl.weight is not None else DEFAULT_WEIGHT_UL) * x
+
+            if volume < MIN_VOLUME_UL:
+                raise ValueError(
+                    f"Calculated volume {volume} for primer {bl.primername} is less than "
+                    f"MIN_VOLUME_UL ({MIN_VOLUME_UL}). Please increase weight or x factor."
+                )
+            if volume > MAX_VOLUME_UL:
+                raise ValueError(
+                    f"Calculated volume {volume} for primer {bl.primername} is greater than "
+                    f"MAX_VOLUME_UL ({MAX_VOLUME_UL}). Please decrease weight or x factor."
+                )
+
             transfer_data.append(
                 {
                     "Well": replicate,
                     "Sources": bl.primername,
                     "Concentration": "",
-                    "Volume": (bl.weight if bl.weight is not None else 2) * x,
+                    "Volume": volume,
                 }
             )
     transfer_df = pd.DataFrame(transfer_data)
 
     return output_df, transfer_df
+
 
 def main():
     args = cli()
@@ -99,7 +118,7 @@ def main():
     _, bedlines = BedLineParser.from_file(args.primer_bed)
 
     # Load in the spec sheet.
-    spec_sheet = pd.read_excel(args.sheet_path)
+    spec_sheet = pd.read_excel(args.plate_spec)
 
     # Create the MYRA files
     total_transfer_df = None
