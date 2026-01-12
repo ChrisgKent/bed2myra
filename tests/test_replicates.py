@@ -31,7 +31,7 @@ def test_replicates_functionality():
         spec_sheet=spec_sheet,
         plate_name=plate_name,
         replicates=replicates,
-        x=x_factor,
+        volume_multiplier=x_factor
     )
 
     assert result is not None

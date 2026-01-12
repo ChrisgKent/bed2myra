@@ -14,23 +14,38 @@ def cli():
         description="Create MYRA sample and transfer plate files from primer BED file and plate specification."
     )
     parser.add_argument(
-        "--primer-bed", required=True, help="Path to primer BED file with weights"
+        "-b",
+        "--primer-bed",
+        required=True,
+        type=pathlib.Path,
+        help="Path to primer BED file with weights",
     )
     parser.add_argument(
+        "-s",
         "--plate-spec",
         required=True,
+        type=pathlib.Path,
         help="Path to Excel file with plate specifications",
     )
     parser.add_argument(
-        "--plate-name", required=True, help="Name of the plate to process", nargs="+"
+        "-p",
+        "--plate-names",
+        required=True,
+        help="Name(s) of the plate(s) to process",
+        nargs="+",
     )
     parser.add_argument(
-        "--replicates", type=int, default=1, help="Number of replicates (default: 1)"
+        "-r",
+        "--replicates",
+        type=int,
+        default=1,
+        help="Number of replicates (default: 1)",
     )
     parser.add_argument(
+        "-o",
         "--output-dir",
         type=pathlib.Path,
-        default="./output/",
+        default=pathlib.Path("./output/"),
         help="Location to write files to",
     )
     parser.add_argument(
@@ -41,10 +56,11 @@ def cli():
     )
 
     parser.add_argument(
-        "--x",
+        "-m",
+        "--volume-multiplier",
         type=float,
         default=1.0,
-        help="X times the transferred volume. For making larger batches",
+        help="Multiplier factor for the transferred volume (default: 1.0). Useful for making larger batches.",
     )
 
     args = parser.parse_args()
@@ -56,7 +72,7 @@ def create_myra_files(
     spec_sheet,
     plate_name,
     replicates: int,
-    x: int = 1,
+    volume_multiplier: float = 1.0,
 ):
     plate_df = spec_sheet[spec_sheet["Plate Name"] == plate_name]
     if plate_df.empty:
@@ -85,17 +101,19 @@ def create_myra_files(
     transfer_data = []
     for replicate in range(1, replicates + 1):
         for bl in wanted_bedlines:
-            volume = (bl.weight if bl.weight is not None else DEFAULT_WEIGHT_UL) * x
+            volume = (
+                bl.weight if bl.weight is not None else DEFAULT_WEIGHT_UL
+            ) * volume_multiplier
 
             if volume < MIN_VOLUME_UL:
                 raise ValueError(
                     f"Calculated volume {volume} for primer {bl.primername} is less than "
-                    f"MIN_VOLUME_UL ({MIN_VOLUME_UL}). Please increase weight or x factor."
+                    f"MIN_VOLUME_UL ({MIN_VOLUME_UL}). Please increase weight or volume multiplier."
                 )
             if volume > MAX_VOLUME_UL:
                 raise ValueError(
                     f"Calculated volume {volume} for primer {bl.primername} is greater than "
-                    f"MAX_VOLUME_UL ({MAX_VOLUME_UL}). Please decrease weight or x factor."
+                    f"MAX_VOLUME_UL ({MAX_VOLUME_UL}). Please decrease weight or volume multiplier."
                 )
 
             transfer_data.append(
@@ -120,15 +138,19 @@ def main():
     # Load in the spec sheet.
     spec_sheet = pd.read_excel(args.plate_spec)
 
+    # Ensure output directory exists
+    if not args.output_dir.exists():
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+
     # Create the MYRA files
     total_transfer_df = None
-    for plate_name in args.plate_name:
+    for plate_name in args.plate_names:
         result = create_myra_files(
             bedlines,
             spec_sheet,
             plate_name,
             args.replicates,
-            x=args.x,
+            volume_multiplier=args.volume_multiplier,
         )
 
         if result is not None:
@@ -141,8 +163,7 @@ def main():
 
             # Write the sample sheet out
             sample_df.to_csv(
-                str(args.output_dir.absolute())
-                + f"/{args.output_prefix}_sample_{plate_name}.csv",
+                args.output_dir / f"{args.output_prefix}_sample_{plate_name}.csv",
                 index=False,
             )
             print(f"Successfully created sample MYRA file for plate '{plate_name}'")
@@ -152,11 +173,11 @@ def main():
     # Write the transfer plate out
     if total_transfer_df is not None:
         total_transfer_df.to_csv(
-            str(args.output_dir.absolute())
-            + f"/{args.output_prefix}_transfer_{'-'.join(args.plate_name)}.csv",
+            args.output_dir
+            / f"{args.output_prefix}_transfer_{'-'.join(args.plate_names)}.csv",
             index=False,
         )
-        print(f"Successfully created transfer MYRA file for plates '{args.plate_name}'")
+        print(f"Successfully created transfer MYRA file for plates '{args.plate_names}'")
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Convert primer.bed files to scripts for automated MYRA pooling"
 readme = "README.md"
 authors = [
-    { name = "ChrisKent", email = "chrisgkent@protonmail.com}
+    { name = "ChrisKent", email = "chrisgkent@protonmail.com" }
 ]
 requires-python = ">=3.12"
 dependencies = [

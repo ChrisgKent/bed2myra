@@ -34,7 +34,7 @@ def test_volume_transfer_and_presence():
         spec_sheet=spec_sheet,
         plate_name=plate_name,
         replicates=replicates,
-        x=x_factor,
+        volume_multiplier=x_factor
     )
 
     assert result is not None

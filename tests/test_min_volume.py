@@ -32,5 +32,5 @@ def test_minimum_volume_enforcement():
             spec_sheet=spec_sheet,
             plate_name=plate_name,
             replicates=1,
-            x=x_factor,
+            volume_multiplier=x_factor
         )
