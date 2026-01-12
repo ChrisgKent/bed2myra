@@ -64,16 +64,16 @@ uv run bed2myra \
 ## Input File Formats
 
 ### 1. Primer BED File
-A standard BED-like file describing the primers. It must contain a weight tag (format `pw=<float>`) in the description/tags column to calculate volumes.
+A standard BED-like file describing the primers. It must contain a weight tag (format `pw=<float>`) in the description/tags column to calculate volumes or will default to 1μL.
 
 **Example:**
 ```text
-NC_000962.3  528752  528772  primer_1_LEFT   1  +  ACCAACG...  pw=3.267
-NC_000962.3  529173  529193  primer_1_RIGHT  1  -  CTTGTCG...  pw=3.267
+NC_000962.3  528752  528772  primer_1_LEFT_1   1  +  ACCAACG...  pw=3.267
+NC_000962.3  529173  529193  primer_1_RIGHT_1  1  -  CTTGTCG...  pw=3.267
 ```
 
 ### 2. Plate Specification (Excel)
-An Excel file (`.xlsx`) defining where each primer is located in the source plates. Required columns:
+An Excel file (`.xlsx`) defining where each primer is located in the source plates. Modelled off the IDT `Plate Specs.xlsx` but only required columns:
 
 - **Plate Name**: The identifier for the plate (matches `-p` argument).
 - **Sequence Name**: The ID of the primer (must match the name column in the BED file).
@@ -81,8 +81,8 @@ An Excel file (`.xlsx`) defining where each primer is located in the source plat
 
 | Plate Name | Well Position | Sequence Name |
 | :--- | :--- | :--- |
-| plate_1 | A1 | primer_1_LEFT |
-| plate_1 | A2 | primer_1_RIGHT |
+| plate_1 | A1 | primer_1_LEFT_1 |
+| plate_1 | A2 | primer_1_RIGHT_1 |
 
 ## Outputs
 
