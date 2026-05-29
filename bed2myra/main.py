@@ -1,70 +1,66 @@
-import argparse
+import logging
 import pathlib
+from typing import Annotated, Optional
 
 import pandas as pd
+import typer
 from primalbedtools.bedfiles import BedLine, BedLineParser
+from rich.logging import RichHandler
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",
+    datefmt="[%X]",
+    handlers=[RichHandler(rich_tracebacks=True)],
+)
+logger = logging.getLogger(__name__)
 
 MIN_VOLUME_UL = 1.0
+WARN_VOLUME_UL = 2.0
 MAX_VOLUME_UL = 50.0
 DEFAULT_WEIGHT_UL = 1
 
+app = typer.Typer(name="bed2myra", pretty_exceptions_show_locals=False)
 
-def cli():
-    parser = argparse.ArgumentParser(
-        description="Create MYRA sample and transfer plate files from primer BED file and plate specification."
-    )
-    parser.add_argument(
-        "-b",
-        "--primer-bed",
-        required=True,
-        type=pathlib.Path,
-        help="Path to primer BED file with weights",
-    )
-    parser.add_argument(
-        "-s",
-        "--plate-spec",
-        required=True,
-        type=pathlib.Path,
-        help="Path to Excel file with plate specifications",
-    )
-    parser.add_argument(
-        "-p",
-        "--plate-names",
-        required=True,
-        help="Name(s) of the plate(s) to process",
-        nargs="+",
-    )
-    parser.add_argument(
-        "-r",
-        "--replicates",
-        type=int,
-        default=1,
-        help="Number of replicates (default: 1)",
-    )
-    parser.add_argument(
-        "-o",
-        "--output-dir",
-        type=pathlib.Path,
-        default=pathlib.Path("./output/"),
-        help="Location to write files to",
-    )
-    parser.add_argument(
-        "--output-prefix",
-        type=str,
-        default="myra",
-        help="Output file prefix",
+
+def log_missing_bedlines_in_spec_sheet(
+    bedlines: list[BedLine], spec_sheet: pd.DataFrame
+):
+    bedline_names = {bl.primername for bl in bedlines}
+    spec_names = set(spec_sheet["Sequence Name"].dropna().astype(str).unique().tolist())
+
+    for primer_name in sorted(bedline_names - spec_names):
+        logger.error(f"Primer in primer.bed not found in spec sheet: {primer_name}")
+    for primer_name in sorted(spec_names - bedline_names):
+        logger.error(f"Primer in spec sheet not found in primer.bed: {primer_name}")
+
+    if bedline_names == spec_names:
+        logger.info(
+            f"{len(bedline_names)}/{len(spec_names)} primers in bed file found in spec sheet"
+        )
+
+
+def iter_plate_groups(plate_names: list[str], group_size: int):
+    for idx in range(0, len(plate_names), group_size):
+        yield plate_names[idx : idx + group_size]
+
+
+def log_transfer_summary(transfer_df: pd.DataFrame, plates: list[str]):
+    logger.info(
+        f"Transfer ({', '.join(plates)}): "
+        f"{len(transfer_df)} transfers | "
+        f"{transfer_df['Sources'].nunique()} unique primers | "
+        f"total volume {transfer_df['Volume'].sum():.2f} µL"
     )
 
-    parser.add_argument(
-        "-m",
-        "--volume-multiplier",
-        type=float,
-        default=1.0,
-        help="Multiplier factor for the transferred volume (default: 1.0). Useful for making larger batches.",
-    )
 
-    args = parser.parse_args()
-    return args
+def log_grand_total(transfer_df: pd.DataFrame):
+    logger.info(
+        f"Grand total: "
+        f"{len(transfer_df)} transfers | "
+        f"{transfer_df['Sources'].nunique()} unique primers | "
+        f"total volume {transfer_df['Volume'].sum():.2f} µL"
+    )
 
 
 def create_myra_files(
@@ -77,10 +73,21 @@ def create_myra_files(
     plate_df = spec_sheet[spec_sheet["Plate Name"] == plate_name]
     if plate_df.empty:
         available_plates = spec_sheet["Plate Name"].unique().tolist()
-        print(
-            f"Can't find plate ({plate_name}). options are {', '.join(available_plates)}"
+        logger.error(
+            f"Cannot find plate '{plate_name}'. Options are: "
+            f"{', '.join(available_plates)}"
         )
         return
+
+    bedline_names = {bl.primername for bl in bedlines}
+    plate_primer_names = (
+        plate_df["Sequence Name"].dropna().astype(str).unique().tolist()
+    )
+    for primer_name in plate_primer_names:
+        if primer_name not in bedline_names:
+            logger.error(
+                f"Primer in spec sheet plate not found in primer.bed: {primer_name}"
+            )
 
     # Filter the bedlines for primername in the plate
     wanted_bedlines = [
@@ -88,12 +95,10 @@ def create_myra_files(
     ]
 
     # Create the output DataFrame in the required format
-    # Merge plate_df with bedlines to get concentration (weight) data
     output_df: pd.DataFrame = plate_df[["Well Position", "Sequence Name"]].copy()
     output_df = output_df.rename(
         columns={"Well Position": "Well", "Sequence Name": "Source Name"}
     )
-    # Add empty Groups column
     output_df["Groups"] = ""
     output_df["Concentration"] = ""
 
@@ -106,14 +111,23 @@ def create_myra_files(
             ) * volume_multiplier
 
             if volume < MIN_VOLUME_UL:
-                raise ValueError(
+                msg = (
                     f"Calculated volume {volume} for primer {bl.primername} is less than "
                     f"MIN_VOLUME_UL ({MIN_VOLUME_UL}). Please increase weight or volume multiplier."
                 )
+                logger.critical(msg)
+                raise ValueError(msg)
+
+            if volume < WARN_VOLUME_UL:
+                logger.warning(
+                    f"Small volume detected for primer {bl.primername} ({volume} µL). "
+                    "This can lead to larger pipetting errors."
+                )
+
             if volume > MAX_VOLUME_UL:
-                raise ValueError(
-                    f"Calculated volume {volume} for primer {bl.primername} is greater than "
-                    f"MAX_VOLUME_UL ({MAX_VOLUME_UL}). Please decrease weight or volume multiplier."
+                logger.warning(
+                    f"Large volume detected for primer {bl.primername} ({volume} µL). "
+                    "This exceeds MAX_VOLUME_UL and will require multiple tips to complete the transfer."
                 )
 
             transfer_data.append(
@@ -129,56 +143,181 @@ def create_myra_files(
     return output_df, transfer_df
 
 
-def main():
-    args = cli()
+@app.command(no_args_is_help=True)
+def main(
+    primer_bed: Annotated[
+        pathlib.Path,
+        typer.Option("-b", "--primer-bed", help="Path to primer BED file with weights"),
+    ],
+    plate_spec: Annotated[
+        pathlib.Path,
+        typer.Option(
+            "-s", "--plate-spec", help="Path to Excel file with plate specifications"
+        ),
+    ],
+    plate_names: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "-p",
+            "--plate-names",
+            help="Name(s) of the plate(s) to process. Required if --pool is not set. Mutually exclusive with --pool.",
+        ),
+    ] = None,
+    pool: Annotated[
+        Optional[int],
+        typer.Option(
+            "--pool",
+            help="Pool number to process (uses all primers in that pool). Required if --plate-names is not set. Mutually exclusive with --plate-names.",
+        ),
+    ] = None,
+    n_plate: Annotated[
+        int,
+        typer.Option("--n-plate", help="Number of plates to group per transfer run"),
+    ] = 2,
+    replicates: Annotated[
+        int, typer.Option("-r", "--replicates", help="Number of replicates")
+    ] = 1,
+    output_dir: Annotated[
+        pathlib.Path,
+        typer.Option("-o", "--output-dir", help="Location to write files to"),
+    ] = pathlib.Path("./output/"),
+    output_prefix: Annotated[
+        str, typer.Option("--output-prefix", help="Output file prefix")
+    ] = "myra",
+    volume_multiplier: Annotated[
+        float,
+        typer.Option(
+            "-x",
+            "--volume-multiplier",
+            help="Multiplier factor for the transferred volume. Useful for making larger batches.",
+        ),
+    ] = 1.0,
+):
+    if pool is not None and plate_names:
+        typer.echo("Error: Use either --pool or --plate-names, not both.", err=True)
+        raise typer.Exit(1)
+    if pool is None and not plate_names:
+        typer.echo("Error: One of --plate-names or --pool is required.", err=True)
+        raise typer.Exit(1)
+    if n_plate < 1:
+        typer.echo("Error: --n-plate must be >= 1", err=True)
+        raise typer.Exit(1)
 
-    # Load the BED file
-    _, bedlines = BedLineParser.from_file(args.primer_bed)
-
-    # Load in the spec sheet.
-    spec_sheet = pd.read_excel(args.plate_spec)
+    # Load the BED file and spec sheet
+    _, bedlines = BedLineParser.from_file(primer_bed)
+    spec_sheet = pd.read_excel(plate_spec)
 
     # Ensure output directory exists
-    if not args.output_dir.exists():
-        args.output_dir.mkdir(parents=True, exist_ok=True)
+    if not output_dir.exists():
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create the MYRA files
-    total_transfer_df = None
-    for plate_name in args.plate_names:
-        result = create_myra_files(
-            bedlines,
-            spec_sheet,
-            plate_name,
-            args.replicates,
-            volume_multiplier=args.volume_multiplier,
-        )
+    if pool is not None:
+        pool_bedlines = [bl for bl in bedlines if bl.pool == pool]
+        if not pool_bedlines:
+            logger.error(f"No primers found in primer.bed for pool {pool}")
+            raise typer.Exit(1)
 
-        if result is not None:
-            sample_df, transfer_df = result
+        pool_primer_names = {bl.primername for bl in pool_bedlines}
+        spec_sheet_pool = spec_sheet[
+            spec_sheet["Sequence Name"].isin(pool_primer_names)
+        ]
+        pool_plate_names = spec_sheet_pool["Plate Name"].dropna().unique().tolist()
 
-            if total_transfer_df is None:
-                total_transfer_df = transfer_df
+        log_missing_bedlines_in_spec_sheet(pool_bedlines, spec_sheet_pool)
+        if not pool_plate_names:
+            logger.error(f"No plates found in spec sheet for pool {pool} primers.")
+            raise typer.Exit(1)
+
+        grand_total_df = None
+        for plate_group in iter_plate_groups(pool_plate_names, n_plate):
+            total_transfer_df = None
+            for plate_name in plate_group:
+                result = create_myra_files(
+                    pool_bedlines,
+                    spec_sheet_pool,
+                    plate_name,
+                    replicates,
+                    volume_multiplier=volume_multiplier,
+                )
+                if result is not None:
+                    sample_df, transfer_df = result
+                    if total_transfer_df is None:
+                        total_transfer_df = transfer_df
+                    else:
+                        total_transfer_df = pd.concat([total_transfer_df, transfer_df])
+
+                    sample_df.to_csv(
+                        output_dir / f"{output_prefix}_sample_{plate_name}.csv",
+                        index=False,
+                    )
+                    logger.info(
+                        f"Successfully created sample MYRA file for plate '{plate_name}'"
+                    )
+                else:
+                    logger.error(
+                        "Failed to create MYRA files. Please check the plate name."
+                    )
+
+            if total_transfer_df is not None:
+                total_transfer_df.to_csv(
+                    output_dir
+                    / f"{output_prefix}_transfer_{'-'.join(plate_group)}.csv",
+                    index=False,
+                )
+                logger.info(
+                    f"Successfully created transfer MYRA file for plates '{', '.join(plate_group)}'"
+                )
+                log_transfer_summary(total_transfer_df, plate_group)
+                grand_total_df = (
+                    total_transfer_df
+                    if grand_total_df is None
+                    else pd.concat([grand_total_df, total_transfer_df])
+                )
+
+        if grand_total_df is not None:
+            log_grand_total(grand_total_df)
+    else:
+        log_missing_bedlines_in_spec_sheet(bedlines, spec_sheet)
+        total_transfer_df = None
+        for plate_name in plate_names:
+            result = create_myra_files(
+                bedlines,
+                spec_sheet,
+                plate_name,
+                replicates,
+                volume_multiplier=volume_multiplier,
+            )
+
+            if result is not None:
+                sample_df, transfer_df = result
+                if total_transfer_df is None:
+                    total_transfer_df = transfer_df
+                else:
+                    total_transfer_df = pd.concat([total_transfer_df, transfer_df])
+
+                sample_df.to_csv(
+                    output_dir / f"{output_prefix}_sample_{plate_name}.csv",
+                    index=False,
+                )
+                logger.info(
+                    f"Successfully created sample MYRA file for plate '{plate_name}'"
+                )
             else:
-                total_transfer_df = pd.concat([total_transfer_df, transfer_df])
+                logger.error(
+                    "Failed to create MYRA files. Please check the plate name."
+                )
 
-            # Write the sample sheet out
-            sample_df.to_csv(
-                args.output_dir / f"{args.output_prefix}_sample_{plate_name}.csv",
+        if total_transfer_df is not None:
+            total_transfer_df.to_csv(
+                output_dir / f"{output_prefix}_transfer_{'-'.join(plate_names)}.csv",
                 index=False,
             )
-            print(f"Successfully created sample MYRA file for plate '{plate_name}'")
-        else:
-            print("Failed to create MYRA files. Please check the plate name.")
-
-    # Write the transfer plate out
-    if total_transfer_df is not None:
-        total_transfer_df.to_csv(
-            args.output_dir
-            / f"{args.output_prefix}_transfer_{'-'.join(args.plate_names)}.csv",
-            index=False,
-        )
-        print(f"Successfully created transfer MYRA file for plates '{args.plate_names}'")
+            logger.info(
+                f"Successfully created transfer MYRA file for plates '{', '.join(plate_names)}'"
+            )
+            log_transfer_summary(total_transfer_df, plate_names)
+            log_grand_total(total_transfer_df)
 
 
 if __name__ == "__main__":
-    main()
+    app()
