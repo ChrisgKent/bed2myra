@@ -1,5 +1,6 @@
 import logging
 import pathlib
+import re
 from typing import Annotated, Optional
 
 import pandas as pd
@@ -21,6 +22,10 @@ MAX_VOLUME_UL = 50.0
 DEFAULT_WEIGHT_UL = 1
 
 app = typer.Typer(name="bed2myra", pretty_exceptions_show_locals=False)
+
+
+def sanitize_filename(name: str) -> str:
+    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)
 
 
 def log_missing_bedlines_in_spec_sheet(
@@ -147,12 +152,24 @@ def create_myra_files(
 def main(
     primer_bed: Annotated[
         pathlib.Path,
-        typer.Option("-b", "--primer-bed", help="Path to primer BED file with weights"),
+        typer.Option(
+            "-b",
+            "--primer-bed",
+            help="Path to primer BED file with weights",
+            exists=True,
+            dir_okay=False,
+            resolve_path=True,
+        ),
     ],
     plate_spec: Annotated[
         pathlib.Path,
         typer.Option(
-            "-s", "--plate-spec", help="Path to Excel file with plate specifications"
+            "-s",
+            "--plate-spec",
+            help="Path to Excel file with plate specifications",
+            exists=True,
+            dir_okay=False,
+            resolve_path=True,
         ),
     ],
     plate_names: Annotated[
@@ -179,7 +196,13 @@ def main(
     ] = 1,
     output_dir: Annotated[
         pathlib.Path,
-        typer.Option("-o", "--output-dir", help="Location to write files to"),
+        typer.Option(
+            "-o",
+            "--output-dir",
+            help="Location to write files to",
+            file_okay=False,
+            resolve_path=True,
+        ),
     ] = pathlib.Path("./output/"),
     output_prefix: Annotated[
         str, typer.Option("--output-prefix", help="Output file prefix")
@@ -203,13 +226,26 @@ def main(
         typer.echo("Error: --n-plate must be >= 1", err=True)
         raise typer.Exit(1)
 
+    output_prefix = sanitize_filename(output_prefix)
+
     # Load the BED file and spec sheet
     _, bedlines = BedLineParser.from_file(primer_bed)
     spec_sheet = pd.read_excel(plate_spec)
 
     # Ensure output directory exists
-    if not output_dir.exists():
+    try:
         output_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        logger.error(
+            f"Permission denied: cannot create output directory '{output_dir}'. "
+            "Check that you have write access to the parent directory."
+        )
+        raise typer.Exit(1)
+    except OSError as e:
+        logger.error(f"Cannot create output directory '{output_dir}': {e}")
+        raise typer.Exit(1)
+
+    logger.info(f"Output directory: {output_dir}")
 
     if pool is not None:
         pool_bedlines = [bl for bl in bedlines if bl.pool == pool]
@@ -246,10 +282,15 @@ def main(
                     else:
                         total_transfer_df = pd.concat([total_transfer_df, transfer_df])
 
-                    sample_df.to_csv(
-                        output_dir / f"{output_prefix}_sample_{plate_name}.csv",
-                        index=False,
+                    sample_path = (
+                        output_dir
+                        / f"{output_prefix}_sample_{sanitize_filename(plate_name)}.csv"
                     )
+                    try:
+                        sample_df.to_csv(sample_path, index=False)
+                    except (PermissionError, OSError) as e:
+                        logger.error(f"Failed to write '{sample_path}': {e}")
+                        raise typer.Exit(1)
                     logger.info(
                         f"Successfully created sample MYRA file for plate '{plate_name}'"
                     )
@@ -259,11 +300,15 @@ def main(
                     )
 
             if total_transfer_df is not None:
-                total_transfer_df.to_csv(
+                transfer_path = (
                     output_dir
-                    / f"{output_prefix}_transfer_{'-'.join(plate_group)}.csv",
-                    index=False,
+                    / f"{output_prefix}_transfer_{'-'.join(sanitize_filename(p) for p in plate_group)}.csv"
                 )
+                try:
+                    total_transfer_df.to_csv(transfer_path, index=False)
+                except (PermissionError, OSError) as e:
+                    logger.error(f"Failed to write '{transfer_path}': {e}")
+                    raise typer.Exit(1)
                 logger.info(
                     f"Successfully created transfer MYRA file for plates '{', '.join(plate_group)}'"
                 )
@@ -295,10 +340,15 @@ def main(
                 else:
                     total_transfer_df = pd.concat([total_transfer_df, transfer_df])
 
-                sample_df.to_csv(
-                    output_dir / f"{output_prefix}_sample_{plate_name}.csv",
-                    index=False,
+                sample_path = (
+                    output_dir
+                    / f"{output_prefix}_sample_{sanitize_filename(plate_name)}.csv"
                 )
+                try:
+                    sample_df.to_csv(sample_path, index=False)
+                except (PermissionError, OSError) as e:
+                    logger.error(f"Failed to write '{sample_path}': {e}")
+                    raise typer.Exit(1)
                 logger.info(
                     f"Successfully created sample MYRA file for plate '{plate_name}'"
                 )
@@ -308,10 +358,15 @@ def main(
                 )
 
         if total_transfer_df is not None:
-            total_transfer_df.to_csv(
-                output_dir / f"{output_prefix}_transfer_{'-'.join(plate_names)}.csv",
-                index=False,
+            transfer_path = (
+                output_dir
+                / f"{output_prefix}_transfer_{'-'.join(sanitize_filename(p) for p in plate_names)}.csv"
             )
+            try:
+                total_transfer_df.to_csv(transfer_path, index=False)
+            except (PermissionError, OSError) as e:
+                logger.error(f"Failed to write '{transfer_path}': {e}")
+                raise typer.Exit(1)
             logger.info(
                 f"Successfully created transfer MYRA file for plates '{', '.join(plate_names)}'"
             )
